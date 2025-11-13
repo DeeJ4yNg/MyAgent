@@ -68,7 +68,7 @@ class Agent:
             # Get OpenAI configuration from environment
             api_base = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
             api_key = os.getenv("OPENAI_API_KEY")
-            model_name = os.getenv("OPENAI_MODEL", "gpt-4")
+            model_name = os.getenv("OPENAI_MODEL_FILE", "gpt-4")
             
             if not api_key:
                 self.console.print("[red]Error: OPENAI_API_KEY environment variable is not set![/red]")
@@ -125,7 +125,7 @@ class Agent:
         self.console.print(
             Panel.fit(
                 Markdown("# Model Selection\n\nPlease choose which model to use:"),
-                title="[bold blue]Model Selection[/bold blue]",
+                title="[bold blue]File Manager Model Selection[/bold blue]",
                 border_style="blue",
             )
         )
@@ -535,11 +535,18 @@ class Agent:
         preserving tool_call_id so the model can reconcile results when we go back to model_response.
         """
         from langgraph.prebuilt import ToolNode
+        from langchain_core.messages import AIMessage
 
         response = []
         tools_by_name = {t.name: t for t in self.tools}
 
-        for tc in state.messages[-1].tool_calls:
+        # Check if the last message is an AIMessage with tool calls
+        last_message = state.messages[-1]
+        if not isinstance(last_message, AIMessage) or not hasattr(last_message, "tool_calls") or not last_message.tool_calls:
+            print(f"❌ Error: Last message is not an AIMessage with tool_calls. Message type: {type(last_message)}")
+            return {"messages": [HumanMessage(content="Error: No valid tool calls found in the last message.")]}
+        
+        for tc in last_message.tool_calls:
             tool_name = tc["name"]
             tool_args = tc["args"]
             print(f"🔧 Invoking tool '{tool_name}' with args {tool_args}")

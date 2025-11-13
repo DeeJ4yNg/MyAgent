@@ -22,6 +22,10 @@ dependencies = [
     "rich==13.9.2",
 ]
 
+[project.scripts]
+myagent = "main:async_main"
+coderagent = "coder_main:async_main"
+
 [dependency-groups]
 dev = [
     "ipykernel>=7.0.1",

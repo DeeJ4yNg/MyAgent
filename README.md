@@ -1,6 +1,6 @@
 # CLI Agent
 
-A powerful, interactive assistant built with LangGraph, LangChain, and LLM models. This project provides a terminal-based AI agent with local utility tools and support for remote MCP (Model Context Protocol) servers.
+A powerful, interactive coding assistant built with LangGraph, LangChain, and Ollama/OpenAI models. This project provides a terminal-based AI agent with local utility tools and support for remote MCP (Model Context Protocol) servers.
 
 ![LangGraph Workflow](langgraph_workflow.png)
 
@@ -203,3 +203,5 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 If you encounter any issues or have questions, please open an issue on the repository.
 
 ---
+
+**Note**: This project is a demonstration of LangGraph capabilities and is not affiliated with Anthropic's Claude.
