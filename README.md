@@ -1,11 +1,12 @@
-# CLI Agent
+# MyAgent - Multi-Agent AI System
 
-A powerful, interactive coding assistant built with LangGraph, LangChain, and Ollama/OpenAI models. This project provides a terminal-based AI agent with local utility tools and support for remote MCP (Model Context Protocol) servers.
+A powerful interactive AI agent system built with LangGraph, LangChain, and Ollama/OpenAI APIs. This project provides a terminal-based AI agent with local utility tools and support for remote MCP (Model Context Protocol) servers.
 
-![LangGraph Workflow](langgraph_workflow.png)
+![LangGraph Workflow](orchestrator_workflow.png)
 
-## 🌟 Features
+## 🌟 Key Features
 
+- **Multi-Agent Architecture**: Includes orchestrator, coder, and file manager agents that automatically select the appropriate agent based on task type
 - **Interactive Agent**: State-driven workflow that processes user input, generates model responses, and executes tools
 - **Multiple Model Support**: Choose between local Ollama models or cloud-based OpenAI-compatible APIs
 - **Rich Terminal UI**: Beautiful console interface with Markdown rendering and syntax highlighting
@@ -28,7 +29,7 @@ A powerful, interactive coding assistant built with LangGraph, LangChain, and Ol
 1. **Clone the repository**
    ```bash
    git clone <repository-url>
-   cd claude-code-clone
+   cd MyAgent
    ```
 
 2. **Initialize the uv workspace**
@@ -73,8 +74,9 @@ OPENAI_MODEL=gpt-4
 GITHUB_PERSONAL_ACCESS_TOKEN=ghp_your_token_here
 ```
 
-### Running the Agent
+### Running the Agents
 
+#### Base Agent
 ```bash
 # Using uv
 uv run main.py
@@ -83,14 +85,96 @@ uv run main.py
 python main.py
 ```
 
+#### Orchestrator Agent (Recommended)
+```bash
+# Using uv
+uv run orchestrator_main.py
+
+# Or with Python directly (after activating venv)
+python orchestrator_main.py
+```
+
+#### Coder Agent
+```bash
+# Using uv
+uv run coder_main.py
+
+# Or with Python directly (after activating venv)
+python coder_main.py
+```
+
+## 🛠️ Agent Types
+
+### 1. Orchestrator Agent
+
+This is the top-level orchestrator agent that automatically selects and calls appropriate sub-agents to complete tasks based on user needs.
+
+**Features**:
+- Analyzes user request types
+- Automatically selects appropriate sub-agents
+- Coordinates work between multiple agents
+
+**Use Cases**:
+- When unsure which specialized agent to use
+- For comprehensive processing of multiple task types
+
+### 2. Coder Agent
+
+Specializes in handling programming and software development related tasks.
+
+**Features**:
+- Write and analyze code
+- Debug and test
+- Code optimization and refactoring
+- Execute code
+- Software architecture issues
+
+**Use Cases**:
+- "Please help me write a Python function to calculate the Fibonacci sequence"
+- "Analyze performance issues in this code"
+- "Write unit tests for this project"
+
+### 3. File Manager Agent
+
+Specializes in handling file and document management related tasks.
+
+**Features**:
+- Search files and directories
+- Read file contents
+- Write and create files
+- Manage file system
+- Document analysis
+
+**Use Cases**:
+- "Please help me find all .txt files in the current directory"
+- "Read and summarize the content of this PDF document"
+- "Create a project directory structure"
+
 ## 🛠️ Available Tools
 
 ### Local Tools
 
-- **File Operations**: Read, write, and list files
-- **Document Processing**: Read Word documents and PDFs
-- **Unit Testing**: Run pytest and return results
-- **Memory Management**: Store and retrieve conversation memories
+The system includes a comprehensive set of local tools for various tasks:
+
+#### File Operations
+- **file_read_tool**: Read text files with encoding support
+- **list_filename_tool**: List files and directories with filtering options
+- **write_txt_tool**: Write content to text files with timestamp support
+
+#### Document Processing
+- **doc_read_tool**: Read Microsoft Word documents (.docx) including text and table content
+- **pdf_read_tool**: Extract text from PDF files using PyPDF2 or pdfplumber
+
+#### Code Development
+- **code_analyzer_tool**: Analyze code for quality issues, bugs, security vulnerabilities, and performance problems
+- **code_execution_tool**: Execute code snippets in multiple languages (Python, JavaScript, Java, C++, Bash)
+- **code_search_tool**: Search for code patterns, functions, classes, or text within code files
+- **code_test_tool**: Run tests using various frameworks (pytest, unittest, jest, mocha, junit)
+- **code_writer_tool**: Write or modify code files with proper formatting and documentation
+- **run_unit_tests_tool**: Execute unit tests using uv command with pytest
+
+#### System Operations
+- **run_command_tool**: Execute shell commands with timeout and working directory options
 
 ### MCP Integrations
 
@@ -101,22 +185,30 @@ python main.py
 
 ## 📖 Usage Examples
 
-Try these prompts to explore the agent's capabilities:
+Try these prompts to explore the agents' capabilities:
 
-- "Summarize the recent articles from https://simonwillison.net/"
-- "Use python_run_code tool to run ascii_art_generator.py"
-- "Show me the content of main.py"
-- "What tools do you have?"
-- "Read requirements.txt"
-- "Run unit tests for this project"
+### Orchestrator Agent Examples
+- "Help me analyze this project's code structure and generate documentation"
+- "Create a Python project including setup files and basic functionality"
+- "Search for all test files in this project and run tests"
+
+### Coder Agent Examples
+- "Write a Python script to process CSV data"
+- "Optimize the performance of this code"
+- "Write unit tests for this function"
+
+### File Manager Agent Examples
+- "Find all configuration files in the project"
+- "Read requirements.txt and analyze dependencies"
+- "Create a standard project directory structure"
 
 ## 🏗️ Architecture
 
-The agent is built using a state graph architecture with the following components:
+The agent system uses a state graph architecture with the following components:
 
-1. **User Input Node**: Captures and processes user commands
-2. **Model Response Node**: Generates AI responses using the selected LLM
-3. **Tool Use Node**: Executes tools based on model decisions
+1. **Orchestration Layer**: Analyzes user requests and selects appropriate agents
+2. **Agent Layer**: Specialized agents handle specific types of tasks
+3. **Tool Layer**: Local tools and MCP server integrations
 4. **Checkpoint System**: Saves conversation state for continuity
 
 ## 🔧 Development
@@ -203,5 +295,3 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 If you encounter any issues or have questions, please open an issue on the repository.
 
 ---
-
-**Note**: This project is a demonstration of LangGraph capabilities and is not affiliated with Anthropic's Claude.
