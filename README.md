@@ -1,6 +1,6 @@
-# MyAgent - Multi-Agent AI System
+# MyAgent - A Multi-Agent System (Building...)
 
-A powerful interactive AI agent system built with LangGraph, LangChain, and Ollama/OpenAI APIs. This project provides a terminal-based AI agent with local utility tools and support for remote MCP (Model Context Protocol) servers.
+Building a powerful interactive AI agent system built with LangGraph, LangChain, and Ollama/OpenAI APIs. This project provides a terminal-based AI agent with local utility tools and support for remote MCP (Model Context Protocol) servers.
 
 ![LangGraph Workflow](orchestrator_workflow.png)
 
