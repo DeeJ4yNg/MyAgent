@@ -52,7 +52,7 @@ def write_code(file_path: str, code_content: str, description: str = "", overwri
     file_ext = os.path.splitext(file_path)[1].lower()
     
     # Create a header comment if description is provided
-    if description and file_ext in ['.py', '.js', '.jsx', '.ts', '.tsx', '.java', '.cpp', '.c', '.cc', '.cxx']:
+    if description and file_ext in ['.py', '.js', '.jsx', '.ts', '.tsx', '.java', '.cpp', '.c', '.cc', '.cxx', '.ps1', '.ps']:
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 existing_content = f.read()
@@ -60,6 +60,8 @@ def write_code(file_path: str, code_content: str, description: str = "", overwri
             # Add header comment based on file type
             if file_ext == '.py':
                 header = f'"""\n{description}\n"""\n\n'
+            elif file_ext in ['.ps1', '.ps']:
+                header = f'<#\n{description}\n#>\n\n'
             elif file_ext in ['.js', '.jsx', '.ts', '.tsx']:
                 header = f'/*\n{description}\n*/\n\n'
             elif file_ext == '.java':
@@ -156,6 +158,10 @@ def create_function(file_path: str, function_name: str, function_code: str,
         # Indent the function code
         indented_code = '\n'.join(['    ' + line for line in function_code.split('\n')])
         full_function = signature + indented_code
+    elif language.lower() in ["powershell", "ps1", "ps"]:
+        signature = f"function {function_name} {{\n"
+        indented_code = '\n'.join(['    ' + line for line in function_code.split('\n')])
+        full_function = signature + indented_code + "\n}"
     elif language.lower() in ["javascript", "js"]:
         signature = f"function {function_name}() {{\n"
         indented_code = '\n'.join(['    ' + line for line in function_code.split('\n')])
@@ -169,13 +175,16 @@ def create_function(file_path: str, function_name: str, function_code: str,
         indented_code = '\n'.join(['    ' + line for line in function_code.split('\n')])
         full_function = signature + indented_code + "\n}"
     else:
-        return f"Error: Unsupported language '{language}'. Supported: python, javascript, java, cpp"
+        return f"Error: Unsupported language '{language}'. Supported: python, powershell, javascript, java, cpp"
     
     # Add doc comment if description is provided
     if description:
         if language.lower() == "python":
             docstring = f'    """\n    {description}\n    """\n'
             full_function = signature + docstring + indented_code
+        elif language.lower() in ["powershell", "ps1", "ps"]:
+            docstring = f"    <#\n    {description}\n    #>\n"
+            full_function = docstring + signature + indented_code + "\n}"
         elif language.lower() in ["javascript", "js"]:
             docstring = f"    /**\n     * {description}\n     */\n"
             full_function = docstring + signature + indented_code + "\n}"

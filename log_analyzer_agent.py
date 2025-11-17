@@ -22,7 +22,7 @@ from langgraph.graph.message import add_messages
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 
-class CoderAgentState(BaseModel):
+class LogAnalyzerAgentState(BaseModel):
     """
     Persistent agent state tracked across the graph.
     - messages: complete chat history (system + user + assistant + tool messages)
@@ -31,7 +31,7 @@ class CoderAgentState(BaseModel):
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
 
-class CoderAgent:
+class LogAnalyzerAgent:
     def __init__(self, config_path: str = "config.json"):
         self._initialized = False
         # Load environment
@@ -52,11 +52,11 @@ class CoderAgent:
         # Initialize model based on config
         if self.model_type == "ollama":
             ollama_config = self.config.get("model", {}).get("ollama", {})
-            coder_config = self.config.get("model", {}).get("coder", {})
+            log_config = self.config.get("model", {}).get("log_analyzer", {})
             
             ollama_base_url = os.getenv("OLLAMA_BASE_URL", ollama_config.get("base_url", "http://localhost:11434"))
             ollama_model = os.getenv("OLLAMA_MODEL", ollama_config.get("model", "llama3.1:8b"))
-            temperature = coder_config.get("temperature", 0.1)
+            temperature = log_config.get("temperature", 0.2)
             
             self.model = ChatOllama(
                 base_url=ollama_base_url,
@@ -67,12 +67,12 @@ class CoderAgent:
             self.console.print(f"[green]Using Ollama model: {ollama_model} at {ollama_base_url}[/green]")
         else:  # cloud API
             cloud_config = self.config.get("model", {}).get("cloud", {})
-            coder_config = self.config.get("model", {}).get("coder", {})
+            log_config = self.config.get("model", {}).get("log_analyzer", {})
             
             api_base = os.getenv("OPENAI_API_BASE", cloud_config.get("api_base", "https://api.openai.com/v1"))
             api_key = os.getenv(cloud_config.get("api_key_env", "OPENAI_API_KEY"))
-            model_name = os.getenv(coder_config.get("model_env", "OPENAI_MODEL_CODER"), cloud_config.get("model", "gpt-4"))
-            temperature = coder_config.get("temperature", 0.1)
+            model_name = os.getenv(log_config.get("model_env", "OPENAI_MODEL_LOG"), cloud_config.get("model", "gpt-4"))
+            temperature = log_config.get("temperature", 0.2)
             
             if not api_key:
                 self.console.print("[red]Error: OPENAI_API_KEY environment variable is not set![/red]")
@@ -89,7 +89,7 @@ class CoderAgent:
             self.console.print(f"[green]Using Cloud API model: {model_name} at {api_base}[/green]")
 
         # Build workflow graph
-        self.workflow = StateGraph(CoderAgentState)
+        self.workflow = StateGraph(LogAnalyzerAgentState)
 
         # Register nodes
         self.workflow.add_node("user_input", self.user_input)
@@ -132,100 +132,45 @@ class CoderAgent:
     def set_agent_registry(self, agent_registry: dict):
         """Set the agent registry for inter-agent collaboration."""
         self.agent_registry = agent_registry
-    
-    async def ask_fresh_start(self):
-        """
-        Ask user if they want to start fresh with a new conversation.
-        If yes, delete memory from checkpoints.db; otherwise continue previous conversation.
-        """
-        self.console.print(
-            Panel.fit(
-                Markdown("Welcome to the Coder Agent!"),
-                title="[bold yellow]Start up[/bold yellow]",
-                border_style="blue",
-            )
-        )
-
-        while True:
-            self.console.print("[bold cyan]Do you want to start a fresh conversation?[/bold cyan]")
-            self.console.print("[dim]Enter 'y' or 'yes' to start fresh(will clear previous memory)[/dim]")
-            self.console.print("[dim]Enter 'n' or 'no' to continue previous conversation[/dim]")
-            
-            user_input = self.console.input("\n[bold cyan]Enter your choice:[/bold cyan] ").strip().lower()
-
-            if user_input in ['y','yes','new']:
-                # Delete memory from checkpoints.db
-                self.console.print("[bold yellow]Deleting previous conversation memory...[/bold yellow]")
-                # Delete checkpoints.db
-                db_path = os.path.join(os.getcwd(), "coder_checkpoints.db")
-                try:
-                    if os.path.exists(db_path):
-                        os.remove(db_path)
-                        self.console.print(
-                            Panel.fit(
-                                Markdown("[bold green]Successfully deleted previous memory![/bold green]"),
-                                title="[bold green]Success[/bold green]",
-                                border_style="green",
-                            )
-                        )
-                    else:
-                        self.console.print(
-                            Panel.fit(
-                                Markdown("[bold yellow]No previous memory found to delete.[/bold yellow]"),
-                                title="[bold yellow]Warning[/bold yellow]",
-                                border_style="yellow",
-                            )
-                        )
-                    
-                except Exception as e:
-                    self.console.print(f"[bold red]Error deleting memory: {e}[/bold red]")
-                    self.console.print("[bold yellow]Continue previous conversation.[/bold yellow]")
-                return True
-
-            elif user_input in ['n','no','continue']:
-                self.console.print(
-                    Panel.fit(
-                        Markdown("[bold green]Continue previous conversation.[/bold green]"),
-                        title="[bold green]Warning[/bold green]",
-                        border_style="green",
-                    )
-                )
-                return False
-            else:
-                self.console.print("[bold red]Invalid input. Please enter 'y' or 'n'.[/bold red]")
 
     async def initialize(self):
         """Async initialization - load tools and other async resources"""
         if self._initialized:
             return self
 
-        print("🔄 Initializing Coder Agent...")
-
-        # Import code-specific tools
-        from tools.code_analyzer_tool import analyze_code
-        from tools.code_writer_tool import write_code
-        from tools.code_search_tool import search_code
-        from tools.code_test_tool import run_code_tests
-        from tools.code_execution_tool import execute_code
-        from tools.agent_collaboration_tool import call_other_agent
+        print("🔄 Initializing Log Analyzer Agent...")
+        
+        # Import log analysis tools
+        from tools.log_analysis_tool import (
+            search_log_files,
+            analyze_log_errors,
+            summarize_log_root_cause,
+            find_windows_event_logs
+        )
+        from tools.file_read_tool import FileReadTool
+        from tools.list_filename_tool import ListFilesTool
 
         # Tools
         local_tools = [
-            analyze_code,
-            write_code,
-            search_code,
-            run_code_tests,
-            execute_code
+            search_log_files,
+            analyze_log_errors,
+            summarize_log_root_cause,
+            find_windows_event_logs,
+            FileReadTool(),
+            ListFilesTool()
         ]
         
         # Add agent collaboration tool if registry is available
         if self.agent_registry:
+            from tools.agent_collaboration_tool import call_other_agent
+            from langchain_core.tools import tool
+            
             # Create a bound version of call_other_agent with registry
             def call_agent_with_registry(agent_name: str, request: str) -> str:
-                """Call another agent (file_manager or log_analyzer) to help with a task.
+                """Call another agent (coder or file_manager) to help with a task.
                 
                 Args:
-                    agent_name: Name of the agent to call ("file_manager" or "log_analyzer")
+                    agent_name: Name of the agent to call ("coder" or "file_manager")
                     request: The request or question to send to the other agent
                 
                 Returns:
@@ -238,7 +183,6 @@ class CoderAgent:
                 })
             
             # Create a tool wrapper
-            from langchain_core.tools import tool
             collaboration_tool = tool(call_agent_with_registry)
             collaboration_tool.name = "call_other_agent"
             local_tools.append(collaboration_tool)
@@ -255,8 +199,8 @@ class CoderAgent:
         self.model_with_tools = self.model.bind_tools(self.tools)
 
         # Compile graph
-        agent_config = self.config.get("agents", {}).get("coder", {})
-        db_path = os.path.join(os.getcwd(), agent_config.get("checkpoint_db", "coder_checkpoints.db"))
+        agent_config = self.config.get("agents", {}).get("log_analyzer", {})
+        db_path = os.path.join(os.getcwd(), agent_config.get("checkpoint_db", "log_analyzer_checkpoints.db"))
         self._checkpointer_ctx = AsyncSqliteSaver.from_conn_string(db_path)
         self.checkpointer = await self._checkpointer_ctx.__aenter__()
         self.agent = self.workflow.compile(checkpointer=self.checkpointer)
@@ -264,7 +208,7 @@ class CoderAgent:
         # Optional: print a greeting panel
         self.console.print(
             Panel.fit(
-                Markdown("**Coder Agent** - Your AI coding assistant"),
+                Markdown("**Log Analyzer Agent** - Your AI log analysis assistant"),
                 title="[bold green]Ready[/bold green]",
                 border_style="green",
             )
@@ -276,18 +220,18 @@ class CoderAgent:
         Main entry point: invoke the agent with a default message.
         The workflow internally handles the conversation loop and exit logic.
         """
-        agent_config = self.config.get("agents", {}).get("coder", {})
+        agent_config = self.config.get("agents", {}).get("log_analyzer", {})
         config = {
-            "configurable": {"thread_id": agent_config.get("thread_id", "coder-1")},
+            "configurable": {"thread_id": agent_config.get("thread_id", "log-analyzer-1")},
             "recursion_limit": self.config.get("ui", {}).get("recursion_limit", 100)
         }
-        initial_state = {"messages": AIMessage(content="What coding task can I help you with today?")}
+        initial_state = {"messages": AIMessage(content="I'm your log analyzer agent. I can help you analyze log files and identify root causes of issues. What logs would you like me to analyze?")}
 
         try:
             await self.agent.ainvoke(initial_state, config=config)
             self.console.print(
                 Panel.fit(
-                    Markdown("Coding session ended!"),
+                    Markdown("Log analysis session ended!"),
                     title="Bye",
                     border_style="green",
                 )
@@ -295,7 +239,7 @@ class CoderAgent:
         except KeyboardInterrupt:
             self.console.print(
                 Panel.fit(
-                    Markdown("Coding session interrupted by user!"),
+                    Markdown("Log analysis session interrupted by user!"),
                     title="Warning",
                     border_style="yellow",
                 )
@@ -312,11 +256,10 @@ class CoderAgent:
 
     async def get_mcp_tools(self):
         # Optional: Add MCP tools if needed
-        # For now, returning empty list
         return []
 
     # Node: user_input
-    def user_input(self, state: CoderAgentState) -> CoderAgentState:
+    def user_input(self, state: LogAnalyzerAgentState) -> LogAnalyzerAgentState:
         """
         Ask user for input and append HumanMessage to state.
         Handles empty input by asking again.
@@ -334,7 +277,7 @@ class CoderAgent:
             if user_input.strip().lower() in ["exit", "quit", "bye"]:
                 self.console.print(
                     Panel.fit(
-                        Markdown("Thank you for using Coder Agent, good bye!"),
+                        Markdown("Thank you for using Log Analyzer Agent, good bye!"),
                         title="Conversation ended",
                         border_style="cyan",
                     )
@@ -343,75 +286,60 @@ class CoderAgent:
             return {"messages": [HumanMessage(content=user_input)]}
 
     # Node: model_response
-    def model_response(self, state: CoderAgentState) -> CoderAgentState:
+    def model_response(self, state: LogAnalyzerAgentState) -> LogAnalyzerAgentState:
         """
-        Call the LLM (with tools bound). Print assistant content and any tool_call previews.
+        Call the LLM (with tools bound) using ReAct framework.
+        Print assistant content and any tool_call previews.
         Decide routing via check_tool_use.
         """
         system_text = """
-        You are a specialized Coder Agent designed to help with software development tasks, 
-        with particular expertise in Python and PowerShell scripting for Windows OS support.
-        Your expertise includes code analysis, writing, debugging, testing, and optimization.
+        You are a specialized Log Analyzer Agent designed to help with Windows OS log analysis and troubleshooting.
+        Your expertise includes analyzing log files, identifying error patterns, and determining root causes of issues.
         
         ## Capabilities:
         
-        - Analyze existing code for bugs, performance issues, and best practices
-        - Write new code in various programming languages (especially Python and PowerShell)
-        - Create PowerShell scripts for Windows administration and automation
-        - Create Python scripts for system management and automation
-        - Search through codebases to find specific functions or patterns
-        - Run tests and analyze test results
-        - Execute code snippets and show results
-        - Refactor code for better readability and performance
-        - Suggest improvements to existing implementations
+        - Search for patterns in log files across directories
+        - Analyze log files for errors and warnings
+        - Identify root causes of issues from log data
+        - Search Windows Event Logs
+        - Summarize findings and provide recommendations
         
         ## ReAct Framework:
         
         You should follow the ReAct (Reasoning and Acting) framework:
         1. **Think**: Analyze the user's request and plan your approach
-        2. **Act**: Use appropriate tools to gather information or write code
-        3. **Observe**: Review the tool results or code execution output
+        2. **Act**: Use appropriate tools to gather information
+        3. **Observe**: Review the tool results
         4. **Think**: Analyze the observations and determine next steps
-        5. **Act/Observe/Think**: Repeat until you have a complete solution
-        6. **Answer**: Provide a comprehensive solution with explanations
-        
-        ## Python & PowerShell Focus:
-        
-        - **Python**: Emphasize clean, readable code with proper error handling
-        - **PowerShell**: Follow PowerShell best practices, use proper cmdlets, handle errors with try-catch
-        - **Windows Integration**: Consider Windows-specific APIs and PowerShell modules
-        - **Scripting**: Create reusable, parameterized scripts for automation
+        5. **Act/Observe/Think**: Repeat until you have enough information
+        6. **Answer**: Provide a comprehensive summary with root cause analysis
         
         ## Guidelines:
         
-        1. **Code Quality**: Always write clean, well-documented code following best practices
-        2. **Testing**: Encourage testing and provide test cases when appropriate
-        3. **Security**: Consider security implications when suggesting code changes
-        4. **Performance**: Optimize for performance when relevant
-        5. **Clarity**: Explain complex concepts in simple terms
-        6. **Windows Context**: Consider Windows OS specifics when writing scripts
+        1. **Systematic Analysis**: Always start by understanding the issue, then search relevant logs
+        2. **Pattern Recognition**: Look for error patterns, timestamps, and correlations
+        3. **Root Cause**: Focus on identifying the root cause, not just symptoms
+        4. **Windows-Specific**: Be aware of Windows log locations and formats
+        5. **Clarity**: Present findings in a clear, structured format
         
         ## Response Format:
         
-        - Use code blocks for all code snippets with proper language tags (python, powershell, etc.)
-        - Explain your reasoning before providing code solutions
-        - Highlight potential issues or considerations
-        - Suggest follow-up improvements when relevant
-        - For PowerShell, include proper error handling and parameter validation
+        - Use structured sections for different aspects of analysis
+        - Highlight critical errors and warnings
+        - Provide actionable recommendations
+        - Include relevant log excerpts with context
         
         ## Inter-Agent Collaboration:
         
         If you need capabilities from other agents, use the call_other_agent tool:
-        - Use "file_manager" agent for file operations, searching files, reading documents
-        - Use "log_analyzer" agent for log analysis, troubleshooting, Windows Event Log access
+        - Use "coder" agent for creating scripts to fix issues, generating automation code
+        - Use "file_manager" agent for searching log files, reading configuration files
         
-        Example: If you need to read a configuration file before writing code, call the file_manager agent.
+        Example: If you identify an issue and need to create a fix script, call the coder agent.
         
         ## Remember:
-        Always think step-by-step, use tools to gather information, observe results, and then provide solutions.
-        Create a plan before writing any code.
-        Your goal is to help users become better developers by providing high-quality code solutions and explanations.
-        Always prioritize code quality, security, and maintainability in your responses.
+        Always think step-by-step, use tools to gather information, observe results, and then provide a comprehensive analysis.
+        Your goal is to help users quickly identify and resolve Windows OS issues through thorough log analysis.
         Don't hesitate to collaborate with other agents when their expertise is needed.
         """
         
@@ -432,7 +360,7 @@ class CoderAgent:
         # Invoke model with thinking indicator
         from rich.spinner import Spinner
         from rich.live import Live
-        with Live(Spinner("point", "[bold magenta]Thinking...[/bold magenta]"), refresh_per_second=10) as live:
+        with Live(Spinner("point", "[bold magenta]Analyzing logs...[/bold magenta]"), refresh_per_second=10) as live:
             response = self.model_with_tools.invoke(messages)
             live.stop()
             
@@ -444,7 +372,7 @@ class CoderAgent:
                         self.console.print(
                             Panel.fit(
                                 Markdown(text),
-                                title="[magenta]Coder Assistant[/magenta]",
+                                title="[magenta]Log Analyzer[/magenta]",
                                 border_style="magenta",
                             )
                         )
@@ -452,7 +380,7 @@ class CoderAgent:
                     self.console.print(
                         Panel.fit(
                             Markdown(
-                                f"{item['name']} with args {item.get('args',None)}"
+                                f"**Tool:** {item['name']}\n**Arguments:** {item.get('args', {})}"
                             ),
                             title="Tool Use",
                         )
@@ -461,18 +389,17 @@ class CoderAgent:
             self.console.print(
                 Panel.fit(
                     Markdown(response.content),
-                    title="[magenta]Coder Assistant[/magenta]",
+                    title="[magenta]Log Analyzer[/magenta]",
                 )
             )
 
         return {"messages": [response]}
 
     # Conditional router
-    def check_tool_use(self, state: CoderAgentState) -> str:
+    def check_tool_use(self, state: LogAnalyzerAgentState) -> str:
         """
         Route based on the last message:
         - If tool_calls exist -> 'tool_use'
-        - If __EXIT__ signal -> 'END' (terminate workflow)
         - Otherwise -> 'user_input' (continue conversation)
         """
         last_message = state.messages[-1]
@@ -482,7 +409,7 @@ class CoderAgent:
         return "user_input"
 
     # Node: tool_use
-    async def tool_use(self, state: CoderAgentState) -> CoderAgentState:
+    async def tool_use(self, state: LogAnalyzerAgentState) -> LogAnalyzerAgentState:
         """
         Execute tool calls from the last assistant message and return ToolMessage(s),
         preserving tool_call_id so the model can reconcile results when we go back to model_response.
@@ -542,7 +469,7 @@ class CoderAgent:
                 )
         return {"messages": response}
 
-    def check_exit(self, state: CoderAgentState) -> str:
+    def check_exit(self, state: LogAnalyzerAgentState) -> str:
         """
         Check if the last user message is an exit command.
         """
@@ -557,7 +484,7 @@ class CoderAgent:
         """
         try:
             mermaid = self.agent.get_graph().draw_mermaid_png(
-                output_file_path="coder_workflow.png",
+                output_file_path="log_analyzer_workflow.png",
                 max_retries=5,
                 retry_delay=2,
             )
@@ -567,8 +494,9 @@ class CoderAgent:
             self.console.print(
                 Panel.fit(
                     Syntax(mermaid, "mermaid", theme="monokai", line_numbers=False),
-                    title="Coder Workflow (Mermaid)",
+                    title="Log Analyzer Workflow (Mermaid)",
                     border_style="cyan",
                 )
             )
             print(self.agent.get_graph().draw_ascii())
+

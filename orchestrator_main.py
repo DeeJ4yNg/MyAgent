@@ -22,7 +22,7 @@ async def main():
     
     # Initialize the agent
     await orchestrator.initialize()
-    
+    orchestrator.print_mermaid_workflow()
     # Run the agent
     await orchestrator.run()
 

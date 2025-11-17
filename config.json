@@ -1,0 +1,75 @@
+{
+  "model": {
+    "type": "Cloud",
+    "ollama": {
+      "base_url": "http://localhost:11434",
+      "model": "llama3.1:8b",
+      "temperature": 0.3,
+      "max_tokens": 4096
+    },
+    "cloud": {
+      "api_base": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "model": "gpt-4",
+      "temperature": 0.3,
+      "max_tokens": 4096
+    },
+    "orchestrator": {
+      "temperature": 0.2,
+      "model_env": "OPENAI_MODEL_ORC"
+    },
+    "coder": {
+      "temperature": 0.1,
+      "model_env": "OPENAI_MODEL_CODER"
+    },
+    "file_manager": {
+      "temperature": 0.3,
+      "model_env": "OPENAI_MODEL_FILE"
+    },
+    "log_analyzer": {
+      "temperature": 0.2,
+      "model_env": "OPENAI_MODEL_LOG"
+    }
+  },
+  "agents": {
+    "orchestrator": {
+      "checkpoint_db": "orchestrator_checkpoints.db",
+      "thread_id": "orchestrator-1"
+    },
+    "coder": {
+      "checkpoint_db": "coder_checkpoints.db",
+      "thread_id": "coder-1"
+    },
+    "file_manager": {
+      "checkpoint_db": "checkpoints.db",
+      "thread_id": "1"
+    },
+    "log_analyzer": {
+      "checkpoint_db": "log_analyzer_checkpoints.db",
+      "thread_id": "log-analyzer-1"
+    }
+  },
+  "tools": {
+    "log_analysis": {
+      "default_log_directories": [
+        "C:\\Windows\\Logs",
+        "C:\\Windows\\System32\\LogFiles",
+        "%TEMP%",
+        "%APPDATA%"
+      ],
+      "common_log_extensions": [".log", ".txt", ".evt", ".evtx"],
+      "max_log_size_mb": 50,
+      "max_lines_per_analysis": 10000
+    },
+    "code_execution": {
+      "timeout": 30,
+      "supported_languages": ["python", "powershell", "bash", "javascript", "java", "cpp", "c"]
+    }
+  },
+  "ui": {
+    "show_mermaid": true,
+    "recursion_limit": 100
+  },
+  "working_directory": "C:\\Users\\Administrator\\Desktop\\AI_Agent_Framework"
+}
+

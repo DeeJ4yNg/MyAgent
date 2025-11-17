@@ -49,8 +49,10 @@ def execute_code(code: str, language: str = "python", timeout: int = 30) -> str:
             return _execute_cpp_code(temp_file_path, timeout, language.lower())
         elif language.lower() == "bash":
             return _execute_bash_code(temp_file_path, timeout)
+        elif language.lower() in ["powershell", "ps1", "ps"]:
+            return _execute_powershell_code(temp_file_path, timeout)
         else:
-            return f"Error: Unsupported language '{language}'. Supported: python, javascript, java, cpp, c, bash."
+            return f"Error: Unsupported language '{language}'. Supported: python, powershell, javascript, java, cpp, c, bash."
     finally:
         # Clean up temporary file
         try:
@@ -139,6 +141,8 @@ def run_script(file_path: str, arguments: str = "", timeout: int = 30) -> str:
         command = [exe_path]
     elif file_ext in [".sh", ".bash"]:
         command = ["bash", file_path]
+    elif file_ext in [".ps1", ".ps"]:
+        command = ["powershell", "-ExecutionPolicy", "Bypass", "-File", file_path]
     else:
         return f"Error: Unsupported file extension '{file_ext}'."
     
@@ -239,7 +243,10 @@ def _get_file_extension(language: str) -> str:
         "c++": ".cpp",
         "c": ".c",
         "bash": ".sh",
-        "shell": ".sh"
+        "shell": ".sh",
+        "powershell": ".ps1",
+        "ps1": ".ps1",
+        "ps": ".ps1"
     }
     return extensions.get(language.lower(), ".txt")
 
@@ -422,3 +429,33 @@ def _execute_bash_code(file_path: str, timeout: int) -> str:
         return f"Error: Bash execution timed out after {timeout} seconds."
     except Exception as e:
         return f"Error executing Bash code: {str(e)}"
+
+
+def _execute_powershell_code(file_path: str, timeout: int) -> str:
+    """Execute PowerShell code from a file."""
+    try:
+        result = subprocess.run(
+            ["powershell", "-ExecutionPolicy", "Bypass", "-File", file_path],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            shell=True  # Use shell=True on Windows for better PowerShell support
+        )
+        
+        output = f"## PowerShell Execution Results\n\n"
+        output += f"Exit Code: {result.returncode}\n\n"
+        
+        if result.stdout:
+            output += "### Standard Output:\n\n"
+            output += f"```\n{result.stdout}\n```\n\n"
+        
+        if result.stderr:
+            output += "### Standard Error:\n\n"
+            output += f"```\n{result.stderr}\n```\n\n"
+        
+        return output
+        
+    except subprocess.TimeoutExpired:
+        return f"Error: PowerShell execution timed out after {timeout} seconds."
+    except Exception as e:
+        return f"Error executing PowerShell code: {str(e)}"

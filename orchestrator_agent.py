@@ -1,6 +1,7 @@
 from typing import Annotated, Sequence, Dict, Any, List
 from dotenv import load_dotenv
 import os
+import json
 from rich.console import Console
 from rich.panel import Panel
 from rich.markdown import Markdown
@@ -22,19 +23,23 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 # Import sub-agents
 from coder_agent import CoderAgent
-from agent import Agent
+from file_management_agent import Agent
+from log_analyzer_agent import LogAnalyzerAgent
 
 
 class OrchestratorAgentState(BaseModel):
     """
     Persistent agent state tracked across the graph.
     - messages: complete chat history (system + user + assistant + tool messages)
-    - selected_agent: which sub-agent to use (coder or file_manager)
+    - selected_agent: which sub-agent to use (coder, file_manager, or log_analyzer)
     - agent_response: response from the sub-agent
-    - active_agent: which agent is currently active (orchestrator, coder, or file_manager)
+    - active_agent: which agent is currently active (orchestrator, coder, file_manager, or log_analyzer)
     - agent_context: context for the currently active agent
     - coder_memory: conversation history with the coder agent
     - file_manager_memory: conversation history with the file_manager agent
+    - log_analyzer_memory: conversation history with the log_analyzer agent
+    - plan: execution plan created by orchestrator
+    - plan_confirmed: whether the plan has been confirmed by user
     """
 
     messages: Annotated[Sequence[BaseMessage], add_messages]
@@ -44,52 +49,62 @@ class OrchestratorAgentState(BaseModel):
     agent_context: Dict[str, Any] = {}  # Store context for active agent
     coder_memory: List[BaseMessage] = []  # Store conversation history with coder agent
     file_manager_memory: List[BaseMessage] = []  # Store conversation history with file_manager agent
+    log_analyzer_memory: List[BaseMessage] = []  # Store conversation history with log_analyzer agent
+    plan: str = ""  # Execution plan
+    plan_confirmed: bool = False  # Whether plan is confirmed
 
 
 class OrchestratorAgent:
-    def __init__(self):
+    def __init__(self, config_path: str = "config.json"):
         self._initialized = False
         # Load environment
         load_dotenv()
         
-        # Rich console for UI
+        # Rich console for UI (set before _load_config in case it needs to print)
         self.console = Console()
         
-        # Let user choose model type
-        self.model_type = self._choose_model_type()
+        # Load configuration
+        self.config = self._load_config(config_path)
         
-        # Initialize model based on user choice
+        # Get model type from config
+        self.model_type = self.config.get("model", {}).get("type", "ollama")
+        
+        # Initialize model based on config
         if self.model_type == "ollama":
-            # Get Ollama configuration from environment
-            ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-            ollama_model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+            ollama_config = self.config.get("model", {}).get("ollama", {})
+            orchestrator_config = self.config.get("model", {}).get("orchestrator", {})
             
-            # Model instantiation (Ollama)
+            ollama_base_url = os.getenv("OLLAMA_BASE_URL", ollama_config.get("base_url", "http://localhost:11434"))
+            ollama_model = os.getenv("OLLAMA_MODEL", ollama_config.get("model", "llama3.1:8b"))
+            temperature = orchestrator_config.get("temperature", 0.2)
+            
             self.model = ChatOllama(
                 base_url=ollama_base_url,
                 model=ollama_model,
-                temperature=0.2,  # Lower temperature for more consistent planning
-                max_tokens=4096,
+                temperature=temperature,
+                max_tokens=ollama_config.get("max_tokens", 4096),
             )
             self.console.print(f"[green]Using Ollama model: {ollama_model} at {ollama_base_url}[/green]")
         else:  # cloud API
-            # Get OpenAI configuration from environment
-            api_base = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
-            api_key = os.getenv("OPENAI_API_KEY")
-            model_name = os.getenv("OPENAI_MODEL_ORC", "gpt-4")
+            cloud_config = self.config.get("model", {}).get("cloud", {})
+            orchestrator_config = self.config.get("model", {}).get("orchestrator", {})
+            
+            api_base = os.getenv("OPENAI_API_BASE", cloud_config.get("api_base", "https://api.openai.com/v1"))
+            api_key = os.getenv(cloud_config.get("api_key_env", "OPENAI_API_KEY"))
+            model_name = os.getenv(orchestrator_config.get("model_env", "OPENAI_MODEL_ORC"), cloud_config.get("model", "gpt-4"))
+            temperature = orchestrator_config.get("temperature", 0.2)
             
             if not api_key:
                 self.console.print("[red]Error: OPENAI_API_KEY environment variable is not set![/red]")
                 self.console.print("[yellow]Please set the OPENAI_API_KEY in your .env file.[/yellow]")
                 exit(1)
             
-            # Model instantiation (OpenAI API)
             self.model = ChatOpenAI(
                 base_url=api_base,
                 api_key=api_key,
                 model=model_name,
-                temperature=0.2,  # Lower temperature for more consistent planning
-                max_tokens=4096,
+                temperature=temperature,
+                max_tokens=cloud_config.get("max_tokens", 4096),
             )
             self.console.print(f"[green]Using Cloud API model: {model_name} at {api_base}[/green]")
 
@@ -99,6 +114,8 @@ class OrchestratorAgent:
         # Register nodes
         self.workflow.add_node("user_input", self.user_input)
         self.workflow.add_node("analyze_request", self.analyze_request)
+        self.workflow.add_node("create_plan", self.create_plan)
+        self.workflow.add_node("wait_for_confirmation", self.wait_for_confirmation)
         self.workflow.add_node("dispatch_to_agent", self.dispatch_to_agent)
         self.workflow.add_node("interact_with_agent", self.interact_with_agent)
         self.workflow.add_node("present_results", self.present_results)
@@ -115,38 +132,57 @@ class OrchestratorAgent:
             }
         )
         
-        self.workflow.add_edge("analyze_request", "dispatch_to_agent")
+        # Plan creation and confirmation flow
+        self.workflow.add_edge("analyze_request", "create_plan")
+        self.workflow.add_conditional_edges("create_plan", self.check_plan_confirmed,
+            {
+                "confirmed": "dispatch_to_agent",
+                "needs_confirmation": "wait_for_confirmation",
+                "exit": END
+            }
+        )
+        self.workflow.add_conditional_edges("wait_for_confirmation", self.check_plan_confirmed,
+            {
+                "confirmed": "dispatch_to_agent",
+                "needs_confirmation": "create_plan",  # Loop back to adjust plan
+                "exit": END
+            }
+        )
+        
+        # Execution flow
         self.workflow.add_edge("dispatch_to_agent", "interact_with_agent")
         self.workflow.add_edge("interact_with_agent", "present_results")
         self.workflow.add_edge("present_results", "user_input")
 
-    def _choose_model_type(self) -> str:
-        """
-        Let user choose between Ollama and Cloud API models
+    def _load_config(self, config_path: str) -> dict:
+        """Load configuration from JSON file."""
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            self.console.print(f"[yellow]Warning: Config file '{config_path}' not found. Using defaults.[/yellow]")
+            return {}
+        except json.JSONDecodeError as e:
+            self.console.print(f"[red]Error: Invalid JSON in config file: {e}[/red]")
+            return {}
+    
+    def _setup_agent_collaboration(self):
+        """Setup inter-agent collaboration by passing agent references."""
+        # Create agent registry for sub-agents to access each other
+        agent_registry = {
+            "coder": self.coder_agent,
+            "file_manager": self.file_manager_agent,
+            "log_analyzer": self.log_analyzer_agent,
+            "orchestrator": self
+        }
         
-        Returns:
-            str: 'ollama' or 'cloud'
-        """
-        self.console.print(
-            Panel.fit(
-                Markdown("# Model Selection\n\nPlease choose which model to use:"),
-                title="[bold blue]Model Selection[/bold blue]",
-                border_style="blue",
-            )
-        )
-        
-        while True:
-            self.console.print("[bold cyan]1.[/bold cyan] [green]Ollama[/green] - Local model deployment")
-            self.console.print("[bold cyan]2.[/bold cyan] [green]Cloud API[/green] - Remote model via OpenAI API format")
-            
-            choice = self.console.input("\n[bold cyan]Enter your choice (1 or 2):[/bold cyan] ").strip()
-            
-            if choice == "1":
-                return "ollama"
-            elif choice == "2":
-                return "cloud"
-            else:
-                self.console.print("[bold red]Invalid choice. Please enter 1 or 2.[/bold red]")
+        # Pass registry to each agent
+        if hasattr(self.coder_agent, 'set_agent_registry'):
+            self.coder_agent.set_agent_registry(agent_registry)
+        if hasattr(self.file_manager_agent, 'set_agent_registry'):
+            self.file_manager_agent.set_agent_registry(agent_registry)
+        if hasattr(self.log_analyzer_agent, 'set_agent_registry'):
+            self.log_analyzer_agent.set_agent_registry(agent_registry)
     
     async def ask_fresh_start(self):
         """
@@ -217,17 +253,29 @@ class OrchestratorAgent:
         print("🔄 Initializing Orchestrator Agent...")
 
         # Initialize sub-agents
-        self.coder_agent = CoderAgent()
-        self.file_manager_agent = Agent()
+        config_path = "config.json"  # Use same config file
         
-        # Initialize the sub-agents
+        # Create agents (they will change to working directory during their own initialization)
+        self.coder_agent = CoderAgent(config_path)
+        self.file_manager_agent = Agent(config_path)
+        self.log_analyzer_agent = LogAnalyzerAgent(config_path)
+        
+        # Pass agent references to each sub-agent for inter-agent collaboration BEFORE initialization
+        # This allows agents to have collaboration tools available during initialization
+        self._setup_agent_collaboration()
+        
+        # Initialize the sub-agents (after setting up collaboration)
+        # Each agent will change to the working directory during initialization
         await self.coder_agent.initialize()
         await self.file_manager_agent.initialize()
+        await self.log_analyzer_agent.initialize()
+        
         
         self._initialized = True
 
         # Compile graph
-        db_path = os.path.join(os.getcwd(), "orchestrator_checkpoints.db")
+        agent_config = self.config.get("agents", {}).get("orchestrator", {})
+        db_path = os.path.join(os.getcwd(), agent_config.get("checkpoint_db", "orchestrator_checkpoints.db"))
         self._checkpointer_ctx = AsyncSqliteSaver.from_conn_string(db_path)
         self.checkpointer = await self._checkpointer_ctx.__aenter__()
         self.agent = self.workflow.compile(checkpointer=self.checkpointer)
@@ -247,8 +295,12 @@ class OrchestratorAgent:
         Main entry point: invoke the agent with a default message.
         The workflow internally handles the conversation loop and exit logic.
         """
-        config = {"configurable": {"thread_id": "orchestrator-1"}, "recursion_limit": 100}
-        initial_state = {"messages": AIMessage(content="I'm your orchestrator agent. I can help you with coding tasks and file management. What would you like to do today?")}
+        agent_config = self.config.get("agents", {}).get("orchestrator", {})
+        config = {
+            "configurable": {"thread_id": agent_config.get("thread_id", "orchestrator-1")},
+            "recursion_limit": self.config.get("ui", {}).get("recursion_limit", 100)
+        }
+        initial_state = {"messages": AIMessage(content="I'm your orchestrator agent. I can help you with coding tasks, file management, and log analysis. What would you like to do today?")}
 
         try:
             await self.agent.ainvoke(initial_state, config=config)
@@ -347,13 +399,14 @@ class OrchestratorAgent:
         system_text = """
         You are an orchestrator agent that analyzes user requests and determines which specialized agent to use.
         
-        You have two specialized agents available:
+        You have three specialized agents available:
         1. Coder Agent - Handles software development tasks including:
-           - Writing and analyzing code
+           - Writing and analyzing code (especially Python and PowerShell)
            - Debugging and testing
            - Code optimization and refactoring
            - Running code execution
            - Software architecture questions
+           - Creating scripts for Windows OS automation
         
         2. File Manager Agent - Handles file and document management tasks including:
            - Searching for files and directories
@@ -362,10 +415,18 @@ class OrchestratorAgent:
            - Managing file systems
            - Document analysis
         
+        3. Log Analyzer Agent - Handles log analysis and troubleshooting tasks including:
+           - Searching log files for patterns and errors
+           - Analyzing log files for root causes
+           - Windows Event Log analysis
+           - Troubleshooting Windows OS issues
+           - Summarizing log findings
+        
         Analyze the user's request and determine which agent would be most appropriate.
         Respond with ONLY one of the following:
         - "coder" if the request is primarily about coding, programming, or software development
         - "file_manager" if the request is primarily about file management, document handling, or file system operations
+        - "log_analyzer" if the request is about log analysis, troubleshooting, or identifying issues from logs
         
         Consider the primary intent of the request, not just keywords.
         """
@@ -388,7 +449,7 @@ class OrchestratorAgent:
         
         # Extract the agent selection from the response
         selected_agent = response.content.strip().lower()
-        if selected_agent not in ["coder", "file_manager"]:
+        if selected_agent not in ["coder", "file_manager", "log_analyzer"]:
             # Default to file_manager if unclear
             selected_agent = "file_manager"
             self.console.print(f"[yellow]Request unclear, defaulting to file manager agent[/yellow]")
@@ -397,20 +458,193 @@ class OrchestratorAgent:
         
         return {"selected_agent": selected_agent}
 
+    # Node: create_plan
+    def create_plan(self, state: OrchestratorAgentState) -> OrchestratorAgentState:
+        """
+        Create an execution plan based on the analyzed request.
+        """
+        selected_agent = state.selected_agent
+        last_message = state.messages[-1]
+        
+        # Include plan context if modifying
+        plan_context = ""
+        if state.plan:
+            plan_context = f"\n\nPrevious plan (if modifying):\n{state.plan}"
+        
+        system_text = f"""
+        You are an orchestrator agent creating an execution plan for a user request.
+        
+        The user request is: {last_message.content if hasattr(last_message, 'content') else str(last_message)}
+        
+        You have selected the {selected_agent} agent to handle this task.
+        {plan_context}
+        
+        Create a detailed execution plan that includes:
+        1. **Objective**: Clear statement of what needs to be accomplished
+        2. **Steps**: Step-by-step breakdown of how to complete the task
+        3. **Agents Involved**: Which agent(s) will be used (may need multiple agents for collaboration)
+        4. **Expected Outcomes**: What results are expected
+        5. **Potential Issues**: Any potential problems or considerations
+        
+        Format the plan clearly with sections and bullet points.
+        If the task requires multiple agents, specify how they will collaborate.
+        Be specific about which agent does what and when collaboration is needed.
+        """
+        
+        messages = [
+            SystemMessage(content=system_text),
+            HumanMessage(content=f"Create an execution plan for: {last_message.content if hasattr(last_message, 'content') else str(last_message)}")
+        ]
+        
+        from rich.spinner import Spinner
+        from rich.live import Live
+        with Live(Spinner("point", "[bold magenta]Creating execution plan...[/bold magenta]"), refresh_per_second=10) as live:
+            response = self.model.invoke(messages)
+            live.stop()
+        
+        plan = response.content.strip()
+        
+        # Display the plan to user
+        self.console.print(
+            Panel.fit(
+                Markdown(plan),
+                title="[bold cyan]Execution Plan[/bold cyan]",
+                border_style="cyan",
+            )
+        )
+        
+        return {"plan": plan, "plan_confirmed": False}
+
+    # Node: wait_for_confirmation
+    def wait_for_confirmation(self, state: OrchestratorAgentState) -> OrchestratorAgentState:
+        """
+        Wait for user confirmation or modification of the plan.
+        """
+        self.console.print("\n[bold yellow]Please review the plan above.[/bold yellow]")
+        self.console.print("[dim]Options:[/dim]")
+        self.console.print("[dim]- Type 'yes', 'y', 'confirm', or 'ok' to proceed with the plan[/dim]")
+        self.console.print("[dim]- Type 'modify' or 'change' followed by your modifications[/dim]")
+        self.console.print("[dim]- Type 'cancel' to abort[/dim]\n")
+        
+        while True:
+            user_input = self.console.input("[bold cyan]Your response:[/bold cyan] ").strip()
+            
+            if not user_input:
+                continue
+            
+            user_lower = user_input.lower()
+            
+            # Check for confirmation
+            if user_lower in ["yes", "y", "confirm", "ok", "proceed", "execute"]:
+                self.console.print("[green]✓ Plan confirmed. Proceeding with execution...[/green]\n")
+                return {"plan_confirmed": True, "messages": [HumanMessage(content="__PLAN_CONFIRMED__")]}
+            
+            # Check for cancellation
+            elif user_lower in ["cancel", "abort", "stop"]:
+                self.console.print("[yellow]Plan cancelled by user.[/yellow]\n")
+                return {"plan_confirmed": False, "messages": [HumanMessage(content="__PLAN_CANCELLED__")]}
+            
+            # Check for modification
+            elif user_lower.startswith("modify") or user_lower.startswith("change") or user_lower.startswith("update"):
+                modification = user_input[len("modify"):].strip() or user_input[len("change"):].strip() or user_input[len("update"):].strip()
+                if not modification:
+                    modification = self.console.input("[bold cyan]Please describe your modifications:[/bold cyan] ").strip()
+                
+                # Update plan based on modification
+                system_text = f"""
+                The user wants to modify the execution plan. 
+                
+                Current plan:
+                {state.plan}
+                
+                User's modification request:
+                {modification}
+                
+                Update the plan according to the user's request. Return the complete updated plan.
+                """
+                
+                messages = [
+                    SystemMessage(content=system_text),
+                    HumanMessage(content=f"Update the plan: {modification}")
+                ]
+                
+                from rich.spinner import Spinner
+                from rich.live import Live
+                with Live(Spinner("point", "[bold magenta]Updating plan...[/bold magenta]"), refresh_per_second=10) as live:
+                    response = self.model.invoke(messages)
+                    live.stop()
+                
+                updated_plan = response.content.strip()
+                
+                self.console.print(
+                    Panel.fit(
+                        Markdown(updated_plan),
+                        title="[bold cyan]Updated Execution Plan[/bold cyan]",
+                        border_style="cyan",
+                    )
+                )
+                
+                return {"plan": updated_plan, "plan_confirmed": False}
+            
+            else:
+                self.console.print("[yellow]Please respond with 'yes' to confirm, 'modify' to change, or 'cancel' to abort.[/yellow]\n")
+
+    def check_plan_confirmed(self, state: OrchestratorAgentState) -> str:
+        """
+        Check if plan is confirmed or needs user confirmation.
+        """
+        last_message = state.messages[-1] if state.messages else None
+        
+        # Check if user cancelled
+        if last_message and hasattr(last_message, "content") and last_message.content == "__PLAN_CANCELLED__":
+            return "exit"
+        
+        # Check if plan is confirmed
+        if state.plan_confirmed:
+            return "confirmed"
+        
+        # Needs confirmation
+        return "needs_confirmation"
+
     # Node: dispatch_to_agent
     async def dispatch_to_agent(self, state: OrchestratorAgentState) -> OrchestratorAgentState:
         """
         Initialize the selected sub-agent and set it as the active agent.
         """
         selected_agent = state.selected_agent
-        last_message = state.messages[-1]
+        
+        # Find the original user request (skip confirmation messages)
+        original_request = None
+        for msg in reversed(state.messages):
+            if (hasattr(msg, "content") and 
+                isinstance(msg, HumanMessage) and 
+                msg.content not in ["__PLAN_CONFIRMED__", "__PLAN_CANCELLED__"]):
+                original_request = msg.content
+                break
+        
+        # If no original request found, use the last non-confirmation message
+        if not original_request:
+            for msg in reversed(state.messages):
+                if hasattr(msg, "content") and msg.content not in ["__PLAN_CONFIRMED__", "__PLAN_CANCELLED__"]:
+                    original_request = str(msg.content)
+                    break
+        
+        # Build comprehensive context message including plan
+        context_message = f"""Original Request: {original_request}
+
+Execution Plan:
+{state.plan}
+
+Please proceed with executing this plan. The plan has been confirmed by the user."""
         
         self.console.print(f"[bold cyan]Activating {selected_agent} agent...[/bold cyan]")
         
-        # Initialize agent context
+        # Initialize agent context with full context
         agent_context = {
-            "messages": [HumanMessage(content=last_message.content)],
-            "initialized": True
+            "messages": [HumanMessage(content=context_message)],
+            "initialized": True,
+            "original_request": original_request,
+            "plan": state.plan
         }
         
         return {
@@ -429,8 +663,27 @@ class OrchestratorAgent:
         # Get or initialize agent context
         agent_context = state.agent_context.copy() if state.agent_context else {"messages": []}
         
-        # Add the new message to the agent's context
-        agent_context["messages"].append(HumanMessage(content=last_message.content))
+        # If this is the first interaction after dispatch, use the context message
+        # Otherwise, add the new message to the agent's context
+        if last_message.content in ["__PLAN_CONFIRMED__"]:
+            # Use the context from agent_context (which has the full context with plan)
+            if agent_context.get("messages"):
+                current_message = agent_context["messages"][0]
+            else:
+                # Fallback: build context message
+                original_request = agent_context.get("original_request", "Unknown request")
+                plan = agent_context.get("plan", state.plan)
+                context_message = f"""Original Request: {original_request}
+
+Execution Plan:
+{plan}
+
+Please proceed with executing this plan. The plan has been confirmed by the user."""
+                current_message = HumanMessage(content=context_message)
+        else:
+            # Regular message, add it to context
+            current_message = HumanMessage(content=last_message.content)
+            agent_context["messages"].append(current_message)
         
         self.console.print(f"[bold cyan]Processing with {active_agent} agent...[/bold cyan]")
         
@@ -441,7 +694,6 @@ class OrchestratorAgent:
                 coder_memory = list(state.coder_memory) if state.coder_memory else []
                 
                 # Add the current message to the coder's memory
-                current_message = HumanMessage(content=last_message.content)
                 coder_memory.append(current_message)
                 
                 # Create a temporary state for the coder agent with its memory
@@ -545,8 +797,23 @@ class OrchestratorAgent:
                 # Get the file_manager's memory from state or initialize if empty
                 file_manager_memory = list(state.file_manager_memory) if state.file_manager_memory else []
                 
-                # Add the current message to the file_manager's memory
-                current_message = HumanMessage(content=last_message.content)
+                # Use context message if available, otherwise use last message
+                if last_message.content in ["__PLAN_CONFIRMED__"]:
+                    if agent_context.get("messages"):
+                        current_message = agent_context["messages"][0]
+                    else:
+                        original_request = agent_context.get("original_request", "Unknown request")
+                        plan = agent_context.get("plan", state.plan)
+                        context_message = f"""Original Request: {original_request}
+
+Execution Plan:
+{plan}
+
+Please proceed with executing this plan. The plan has been confirmed by the user."""
+                        current_message = HumanMessage(content=context_message)
+                else:
+                    current_message = HumanMessage(content=last_message.content)
+                
                 file_manager_memory.append(current_message)
                 
                 # Create a temporary state for the file manager agent with its memory
@@ -642,6 +909,120 @@ class OrchestratorAgent:
                         return result
                 else:
                     error_msg = "No valid response from file_manager agent"
+                    self.console.print(f"[bold red]{error_msg}[/bold red]")
+                    return {"agent_response": error_msg, "agent_context": agent_context}
+                
+            elif active_agent == "log_analyzer":
+                # Use the log analyzer agent with its memory
+                log_analyzer_memory = list(state.log_analyzer_memory) if state.log_analyzer_memory else []
+                
+                # Use context message if available, otherwise use last message
+                if last_message.content in ["__PLAN_CONFIRMED__"]:
+                    if agent_context.get("messages"):
+                        current_message = agent_context["messages"][0]
+                    else:
+                        original_request = agent_context.get("original_request", "Unknown request")
+                        plan = agent_context.get("plan", state.plan)
+                        context_message = f"""Original Request: {original_request}
+
+Execution Plan:
+{plan}
+
+Please proceed with executing this plan. The plan has been confirmed by the user."""
+                        current_message = HumanMessage(content=context_message)
+                else:
+                    current_message = HumanMessage(content=last_message.content)
+                
+                log_analyzer_memory.append(current_message)
+                
+                # Create a temporary state for the log analyzer agent with its memory
+                log_analyzer_state = type('State', (), {'messages': log_analyzer_memory})()
+                
+                # Invoke the log_analyzer agent's model_response method
+                log_analyzer_response = self.log_analyzer_agent.model_response(log_analyzer_state)
+                
+                # Extract the response and check for tool calls
+                if "messages" in log_analyzer_response and len(log_analyzer_response["messages"]) > 0:
+                    response_message = log_analyzer_response["messages"][0]
+                    
+                    # Update the log_analyzer_state with the model's response
+                    log_analyzer_state.messages = log_analyzer_memory + [response_message]
+                    
+                    # Check if the response is from the model and contains tool calls
+                    if (isinstance(response_message, AIMessage) and 
+                        hasattr(response_message, 'tool_calls') and 
+                        response_message.tool_calls):
+                        self.console.print(f"[yellow]Agent wants to use tools, executing...[/yellow]")
+                        
+                        # Execute the tool calls
+                        tool_response = await self.log_analyzer_agent.tool_use(log_analyzer_state)
+                        
+                        # Add tool response to the log_analyzer's memory
+                        if "messages" in tool_response:
+                            log_analyzer_state.messages = log_analyzer_memory + [response_message] + tool_response["messages"]
+                            log_analyzer_memory = log_analyzer_state.messages
+                        
+                        # Get the final response after tool execution
+                        final_response = self.log_analyzer_agent.model_response(log_analyzer_state)
+                        final_message = final_response["messages"][0]
+                        
+                        # Extract the response content
+                        if isinstance(final_message.content, list):
+                            response_text = ""
+                            for item in final_message.content:
+                                if item["type"] == "text":
+                                    response_text += item.get("text", "")
+                        else:
+                            response_text = final_message.content
+                        
+                        # Add the final response to the log_analyzer's memory
+                        final_ai_message = AIMessage(content=response_text)
+                        log_analyzer_memory.append(final_ai_message)
+                        
+                        # Update agent context with the final response
+                        agent_context["messages"].append(final_ai_message)
+                        
+                        # Create result with agent response, context and memory
+                        result = {
+                            "agent_response": response_text,
+                            "agent_context": agent_context,
+                            "log_analyzer_memory": log_analyzer_memory
+                        }
+                        
+                        # Update the state with the log_analyzer's memory
+                        state.log_analyzer_memory = log_analyzer_memory
+                        
+                        return result
+                    else:
+                        # No tool calls, just return the response
+                        if isinstance(response_message.content, list):
+                            response_text = ""
+                            for item in response_message.content:
+                                if item["type"] == "text":
+                                    response_text += item.get("text", "")
+                        else:
+                            response_text = response_message.content
+                        
+                        # Add the response to the log_analyzer's memory
+                        ai_message = AIMessage(content=response_text)
+                        log_analyzer_memory.append(ai_message)
+                        
+                        # Update agent context with the response
+                        agent_context["messages"].append(ai_message)
+                        
+                        # Create result with agent response, context and memory
+                        result = {
+                            "agent_response": response_text,
+                            "agent_context": agent_context,
+                            "log_analyzer_memory": log_analyzer_memory
+                        }
+                        
+                        # Update the state with the log_analyzer's memory
+                        state.log_analyzer_memory = log_analyzer_memory
+                        
+                        return result
+                else:
+                    error_msg = "No valid response from log_analyzer agent"
                     self.console.print(f"[bold red]{error_msg}[/bold red]")
                     return {"agent_response": error_msg, "agent_context": agent_context}
                 
