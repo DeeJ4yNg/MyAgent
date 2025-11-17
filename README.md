@@ -1,19 +1,23 @@
 # MyAgent - Multi-Agent AI System
 
-A powerful interactive AI agent system built with LangGraph, LangChain, and Ollama/OpenAI APIs. This project provides a terminal-based AI agent with local utility tools and support for remote MCP (Model Context Protocol) servers.
+A powerful interactive AI multi‑agent system built with LangGraph, LangChain, and Ollama/OpenAI APIs.  
+The project provides a terminal-based orchestrator with specialized sub‑agents (coder, file manager, log analyzer), local tools, and optional MCP (Model Context Protocol) integrations.
 
 ![LangGraph Workflow](orchestrator_workflow.png)
 
 ## 🌟 Key Features
 
-- **Multi-Agent Architecture**: Includes orchestrator, coder, and file manager agents that automatically select the appropriate agent based on task type
-- **Interactive Agent**: State-driven workflow that processes user input, generates model responses, and executes tools
-- **Multiple Model Support**: Choose between local Ollama models or cloud-based OpenAI-compatible APIs
+- **Multi-Agent Architecture**: Orchestrator, Coder, File Manager, and Log Analyzer agents that automatically select and collaborate based on task type
+- **ReAct-Based Reasoning**: All agents follow a ReAct loop (Think → Act via tools → Observe → Think → Answer) for more reliable step‑by‑step problem solving
+- **Execution Planning & Confirmation**: Orchestrator creates a multi‑step plan, presents it for your confirmation/modification, and only then executes it
+- **Inter-Agent Collaboration**: Sub‑agents can call each other (e.g., Log Analyzer asks Coder to generate a PowerShell fix script, Coder asks File Manager to open files)
+- **Multiple Model Support**: Choose between local Ollama models or cloud-based OpenAI‑compatible APIs (configured in `config.json` + `.env`)
 - **Rich Terminal UI**: Beautiful console interface with Markdown rendering and syntax highlighting
-- **Local Tools**: File operations, document reading, PDF processing, and unit test execution
+- **Configurable Working Directory**: All agents operate inside a centralized working folder configured via `config.json` (e.g. `E:\AfterMars\Agent_Working_Place`)
+- **Local Tools**: File operations, document reading, PDF processing, code analysis/execution, log analysis, and unit test execution
 - **MCP Integration**: Support for remote MCP servers including Desktop Commander, Python sandbox, DuckDuckGo search, and GitHub
-- **Persistent Memory**: SQLite-based checkpoint system for conversation continuity
-- **Workflow Visualization**: Automatic generation of Mermaid diagrams for the agent's workflow
+- **Persistent Memory**: SQLite-based checkpoint system for conversation continuity (per‑agent databases in the working directory)
+- **Workflow Visualization**: Automatic generation of Mermaid diagrams for the agents’ workflows
 
 ## 🚀 Quick Start
 
@@ -76,13 +80,15 @@ GITHUB_PERSONAL_ACCESS_TOKEN=ghp_your_token_here
 
 ### Running the Agents
 
-#### Base Agent
+> **Recommended entrypoint:** Orchestrator Agent – it will route tasks to the appropriate sub‑agent.
+
+#### File Manager Agent (Base / Single-Agent Mode)
 ```bash
 # Using uv
-uv run main.py
+uv run file_manager_main.py
 
 # Or with Python directly (after activating venv)
-python main.py
+python file_manager_main.py
 ```
 
 #### Orchestrator Agent (Recommended)
@@ -103,52 +109,78 @@ uv run coder_main.py
 python coder_main.py
 ```
 
+> There is also a **Log Analyzer Agent** entrypoint if you want to work only with logs:
+> ```bash
+> uv run log_analyzer_main.py
+> # or
+> python log_analyzer_main.py
+> ```
+
 ## 🛠️ Agent Types
 
 ### 1. Orchestrator Agent
 
-This is the top-level orchestrator agent that automatically selects and calls appropriate sub-agents to complete tasks based on user needs.
+Top‑level coordinator that analyzes your request, creates an execution plan, asks for confirmation, and then routes to/coordinates sub‑agents.
 
 **Features**:
-- Analyzes user request types
-- Automatically selects appropriate sub-agents
-- Coordinates work between multiple agents
+- Analyzes user request types and selects appropriate sub‑agents (`coder`, `file_manager`, `log_analyzer`)
+- Creates a ReAct‑style execution plan and waits for user confirmation/modification
+- Coordinates work and information flow between multiple agents
+- Maintains per‑agent conversation memory (stored in per‑agent SQLite checkpoint DBs)
 
 **Use Cases**:
-- When unsure which specialized agent to use
-- For comprehensive processing of multiple task types
+- When you are not sure which agent to use
+- Tasks that require both coding and file/log operations
+- End‑to‑end troubleshooting flows (e.g., “analyze logs and then generate a fix script”)
 
 ### 2. Coder Agent
 
-Specializes in handling programming and software development related tasks.
+Specializes in programming and software development tasks, with a focus on **Python** and **PowerShell** scripting for Windows environments.
 
 **Features**:
-- Write and analyze code
-- Debug and test
+- Write and analyze code (Python, PowerShell, plus other languages via tools)
+- Debug and test code, including running unit tests
 - Code optimization and refactoring
-- Execute code
-- Software architecture issues
+- Execute scripts/snippets via the execution tool
+- Can call File Manager and Log Analyzer via the collaboration tool
 
 **Use Cases**:
-- "Please help me write a Python function to calculate the Fibonacci sequence"
-- "Analyze performance issues in this code"
-- "Write unit tests for this project"
+- “Write a PowerShell script to collect Windows event logs for a given EventID”
+- “Create a Python script to parse and summarize IIS logs”
+- “Analyze performance issues in this function and optimize it”
+- “Generate unit tests for this module”
 
 ### 3. File Manager Agent
 
-Specializes in handling file and document management related tasks.
+Specializes in file system and document management tasks, operating inside the configured working directory.
 
 **Features**:
-- Search files and directories
-- Read file contents
-- Write and create files
-- Manage file system
-- Document analysis
+- Search files and directories (with filtering and size/depth info)
+- Read and write file contents
+- Create and organize project directory structures
+- Document analysis (text, docx, PDF)
+- Can call Coder and Log Analyzer via the collaboration tool
 
 **Use Cases**:
-- "Please help me find all .txt files in the current directory"
-- "Read and summarize the content of this PDF document"
-- "Create a project directory structure"
+- “Find all `.log` and `.txt` files under the working directory”
+- “Read and summarize this PDF / DOCX”
+- “Create a standard project directory structure for a Python project”
+
+### 4. Log Analyzer Agent
+
+Specialized in Windows OS log analysis and troubleshooting.
+
+**Features**:
+- Search log files with regex and filters (size, path, etc.)
+- Extract and summarize error and warning patterns
+- Root‑cause analysis over log files (timeline, common error types)
+- Windows Event Log (EVT/EVTX) querying (requires `pywin32` on Windows)
+- Can call Coder to generate fix scripts (Python/PowerShell) or File Manager to explore more files
+
+**Use Cases**:
+- “Analyze `System` and `Application` logs to find causes of random reboots”
+- “Summarize the root cause of these IIS errors from logs in the working directory”
+- “Search Windows Event Logs for EventID 1000 errors and summarize them”
 
 ## 🛠️ Available Tools
 
@@ -167,7 +199,7 @@ The system includes a comprehensive set of local tools for various tasks:
 
 #### Code Development
 - **code_analyzer_tool**: Analyze code for quality issues, bugs, security vulnerabilities, and performance problems
-- **code_execution_tool**: Execute code snippets in multiple languages (Python, JavaScript, Java, C++, Bash)
+- **code_execution_tool**: Execute code snippets in multiple languages (Python, PowerShell, JavaScript, Java, C/C++, Bash)
 - **code_search_tool**: Search for code patterns, functions, classes, or text within code files
 - **code_test_tool**: Run tests using various frameworks (pytest, unittest, jest, mocha, junit)
 - **code_writer_tool**: Write or modify code files with proper formatting and documentation
@@ -175,6 +207,11 @@ The system includes a comprehensive set of local tools for various tasks:
 
 #### System Operations
 - **run_command_tool**: Execute shell commands with timeout and working directory options
+- **agent_collaboration_tool**: Allow sub‑agents to call each other (`coder`, `file_manager`, `log_analyzer`) for cross‑domain tasks
+
+#### Log Analysis
+- **log_analysis_tool**: Search and analyze log files for errors and patterns
+- **Windows Event Log helper**: (within `log_analysis_tool`) query Windows Event Logs by log name, level, event ID, etc.
 
 ### MCP Integrations
 
