@@ -13,7 +13,7 @@ The project provides a terminal-based orchestrator with specialized sub‑agents
 - **Inter-Agent Collaboration**: Sub‑agents can call each other (e.g., Log Analyzer asks Coder to generate a PowerShell fix script, Coder asks File Manager to open files)
 - **Multiple Model Support**: Choose between local Ollama models or cloud-based OpenAI‑compatible APIs (configured in `config.json` + `.env`)
 - **Rich Terminal UI**: Beautiful console interface with Markdown rendering and syntax highlighting
-- **Configurable Working Directory**: All agents operate inside a centralized working folder configured via `config.json` (e.g. `E:\AfterMars\Agent_Working_Place`)
+- **Configurable Working Directory**: All agents operate inside a centralized working folder configured via `config.json` (e.g. `E:\Test\Agent_Working_Place`)
 - **Local Tools**: File operations, document reading, PDF processing, code analysis/execution, log analysis, and unit test execution
 - **MCP Integration**: Support for remote MCP servers including Desktop Commander, Python sandbox, DuckDuckGo search, and GitHub
 - **Persistent Memory**: SQLite-based checkpoint system for conversation continuity (per‑agent databases in the working directory)
