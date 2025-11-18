@@ -24,6 +24,8 @@ from tools.doc_read_tool import DocReadTool
 from tools.list_filename_tool import ListFilesTool
 from tools.pdf_read_tool import PdfReadTool
 from tools.write_txt_tool import WriteMemoryTool, ReadMemoryTool, ListMemoriesTool
+from tools.rag_retriever import KnowledgeSearchTool
+from tools.token_tracker import tracker
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 # import sqlite3
@@ -220,6 +222,7 @@ class Agent:
             ReadMemoryTool(),
             ListMemoriesTool()
         ]
+        local_tools.append(KnowledgeSearchTool())
         
         # Add agent collaboration tool if registry is available
         if self.agent_registry:
@@ -462,14 +465,13 @@ class Agent:
         answer questions, and assist with simple tasks related to files on their computer.
         
         ## Capabilities:
-
+        
         - Search for files and directories using glob patterns
         - Read file contents
         - Write file contents
         - Create new files and directories
         - Answer questions about file contents (if provided)
-        - Use provided tools to search data based on question. Tips: use the write_txt_tool to mark down 
-          the related content and answer question based on the record you just marked down
+        - Use provided tools to search data based on question. Prefer `knowledge_search` to retrieve relevant contexts from the internal knowledge base, and use the write_txt_tool to mark down related content and answer based on the record you just marked down
         - Respond in a concise and friendly manner
 
         ## ReAct Framework:
@@ -566,6 +568,28 @@ class Agent:
                 )
             )
 
+        try:
+            prompt_text = ""
+            for m in messages:
+                c = m.content
+                if isinstance(c, list):
+                    for item in c:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            prompt_text += item.get("text", "")
+                elif isinstance(c, str):
+                    prompt_text += c
+                else:
+                    prompt_text += str(c)
+            if isinstance(response.content, list):
+                completion_text = ""
+                for item in response.content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        completion_text += item.get("text", "")
+            else:
+                completion_text = response.content if isinstance(response.content, str) else str(response.content)
+            tracker.record("file_manager", tracker.estimate_tokens(prompt_text), tracker.estimate_tokens(completion_text))
+        except Exception:
+            pass
         return {"messages": [response]}
 
     # Conditional router

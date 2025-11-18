@@ -20,6 +20,7 @@ from langgraph.graph import StateGraph, END
 from pydantic import BaseModel
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from tools.token_tracker import tracker
 
 
 class CoderAgentState(BaseModel):
@@ -465,6 +466,28 @@ class CoderAgent:
                 )
             )
 
+        try:
+            prompt_text = ""
+            for m in messages:
+                c = m.content
+                if isinstance(c, list):
+                    for item in c:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            prompt_text += item.get("text", "")
+                elif isinstance(c, str):
+                    prompt_text += c
+                else:
+                    prompt_text += str(c)
+            if isinstance(response.content, list):
+                completion_text = ""
+                for item in response.content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        completion_text += item.get("text", "")
+            else:
+                completion_text = response.content if isinstance(response.content, str) else str(response.content)
+            tracker.record("coder", tracker.estimate_tokens(prompt_text), tracker.estimate_tokens(completion_text))
+        except Exception:
+            pass
         return {"messages": [response]}
 
     # Conditional router

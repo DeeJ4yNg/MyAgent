@@ -20,11 +20,13 @@ from langgraph.graph import StateGraph, END
 from pydantic import BaseModel
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from tools.token_tracker import tracker
 
 # Import sub-agents
 from coder_agent import CoderAgent
 from file_management_agent import Agent
 from log_analyzer_agent import LogAnalyzerAgent
+from general_assistant_agent import GeneralAssistantAgent
 
 
 class OrchestratorAgentState(BaseModel):
@@ -50,6 +52,7 @@ class OrchestratorAgentState(BaseModel):
     coder_memory: List[BaseMessage] = []  # Store conversation history with coder agent
     file_manager_memory: List[BaseMessage] = []  # Store conversation history with file_manager agent
     log_analyzer_memory: List[BaseMessage] = []  # Store conversation history with log_analyzer agent
+    general_memory: List[BaseMessage] = []
     plan: str = ""  # Execution plan
     plan_confirmed: bool = False  # Whether plan is confirmed
 
@@ -132,8 +135,12 @@ class OrchestratorAgent:
             }
         )
         
-        # Plan creation and confirmation flow
-        self.workflow.add_edge("analyze_request", "create_plan")
+        self.workflow.add_conditional_edges("analyze_request", self.check_need_plan,
+            {
+                "needs_plan": "create_plan",
+                "no_plan": "dispatch_to_agent",
+            }
+        )
         self.workflow.add_conditional_edges("create_plan", self.check_plan_confirmed,
             {
                 "confirmed": "dispatch_to_agent",
@@ -173,6 +180,7 @@ class OrchestratorAgent:
             "coder": self.coder_agent,
             "file_manager": self.file_manager_agent,
             "log_analyzer": self.log_analyzer_agent,
+            "general": self.general_agent,
             "orchestrator": self
         }
         
@@ -183,6 +191,8 @@ class OrchestratorAgent:
             self.file_manager_agent.set_agent_registry(agent_registry)
         if hasattr(self.log_analyzer_agent, 'set_agent_registry'):
             self.log_analyzer_agent.set_agent_registry(agent_registry)
+        if hasattr(self.general_agent, 'set_agent_registry'):
+            self.general_agent.set_agent_registry(agent_registry)
     
     async def ask_fresh_start(self):
         """
@@ -259,6 +269,7 @@ class OrchestratorAgent:
         self.coder_agent = CoderAgent(config_path)
         self.file_manager_agent = Agent(config_path)
         self.log_analyzer_agent = LogAnalyzerAgent(config_path)
+        self.general_agent = GeneralAssistantAgent(config_path)
         
         # Pass agent references to each sub-agent for inter-agent collaboration BEFORE initialization
         # This allows agents to have collaboration tools available during initialization
@@ -269,6 +280,7 @@ class OrchestratorAgent:
         await self.coder_agent.initialize()
         await self.file_manager_agent.initialize()
         await self.log_analyzer_agent.initialize()
+        await self.general_agent.initialize()
         
         
         self._initialized = True
@@ -352,6 +364,14 @@ class OrchestratorAgent:
         # Otherwise, continue with the active agent
         return "interact"
 
+    def check_need_plan(self, state: OrchestratorAgentState) -> str:
+        try:
+            if state.selected_agent == "general":
+                return "no_plan"
+            return "needs_plan"
+        except Exception:
+            return "needs_plan"
+
     # Node: user_input
     def user_input(self, state: OrchestratorAgentState) -> OrchestratorAgentState:
         """
@@ -376,6 +396,21 @@ class OrchestratorAgent:
                 continue
                 
             if user_input.strip().lower() in ["exit", "quit", "bye"]:
+                usage = tracker.summary()
+                usage_md = f"Total tokens: {usage.get('total', 0)}\nPrompt: {usage.get('total_prompt', 0)}\nCompletion: {usage.get('total_completion', 0)}"
+                per_model = usage.get("per_model", {})
+                if per_model:
+                    lines = ["Per model:"]
+                    for k, v in per_model.items():
+                        lines.append(f"- {k}: total={v.get('total', 0)}, prompt={v.get('prompt', 0)}, completion={v.get('completion', 0)}")
+                    usage_md = usage_md + "\n" + "\n".join(lines)
+                self.console.print(
+                    Panel.fit(
+                        Markdown(f"**Session Ended**\n\n{usage_md}"),
+                        title="[bold green]Token Usage[/bold green]",
+                        border_style="green",
+                    )
+                )
                 self.console.print(
                     Panel.fit(
                         Markdown("Thank you for using Orchestrator Agent, good bye!"),
@@ -399,7 +434,7 @@ class OrchestratorAgent:
         system_text = """
         You are an orchestrator agent that analyzes user requests and determines which specialized agent to use.
         
-        You have three specialized agents available:
+        You have four specialized agents available:
         1. Coder Agent - Handles software development tasks including:
            - Writing and analyzing code (especially Python and PowerShell)
            - Debugging and testing
@@ -416,17 +451,20 @@ class OrchestratorAgent:
            - Document analysis
         
         3. Log Analyzer Agent - Handles log analysis and troubleshooting tasks including:
-           - Searching log files for patterns and errors
-           - Analyzing log files for root causes
-           - Windows Event Log analysis
-           - Troubleshooting Windows OS issues
-           - Summarizing log findings
+            - Searching log files for patterns and errors
+            - Analyzing log files for root causes
+            - Windows Event Log analysis
+            - Troubleshooting Windows OS issues
+            - Summarizing log findings
+        
+        4. General Assistant - Handles general-purpose requests when none of the specialized agents clearly apply; can consult other agents when needed
         
         Analyze the user's request and determine which agent would be most appropriate.
         Respond with ONLY one of the following:
         - "coder" if the request is primarily about coding, programming, or software development
         - "file_manager" if the request is primarily about file management, document handling, or file system operations
         - "log_analyzer" if the request is about log analysis, troubleshooting, or identifying issues from logs
+        - "general" if the request is general-purpose or unclear which specialized agent should handle it
         
         Consider the primary intent of the request, not just keywords.
         """
@@ -446,13 +484,34 @@ class OrchestratorAgent:
         with Live(Spinner("point", "[bold magenta]Analyzing request...[/bold magenta]"), refresh_per_second=10) as live:
             response = self.model.invoke(messages)
             live.stop()
+        try:
+            prompt_text = ""
+            for m in messages:
+                c = m.content
+                if isinstance(c, list):
+                    for item in c:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            prompt_text += item.get("text", "")
+                elif isinstance(c, str):
+                    prompt_text += c
+                else:
+                    prompt_text += str(c)
+            if isinstance(response.content, list):
+                completion_text = ""
+                for item in response.content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        completion_text += item.get("text", "")
+            else:
+                completion_text = response.content if isinstance(response.content, str) else str(response.content)
+            tracker.record("orchestrator", tracker.estimate_tokens(prompt_text), tracker.estimate_tokens(completion_text))
+        except Exception:
+            pass
         
         # Extract the agent selection from the response
         selected_agent = response.content.strip().lower()
-        if selected_agent not in ["coder", "file_manager", "log_analyzer"]:
-            # Default to file_manager if unclear
-            selected_agent = "file_manager"
-            self.console.print(f"[yellow]Request unclear, defaulting to file manager agent[/yellow]")
+        if selected_agent not in ["coder", "file_manager", "log_analyzer", "general"]:
+            selected_agent = "general"
+            self.console.print(f"[yellow]Request unclear, defaulting to general assistant[/yellow]")
         else:
             self.console.print(f"[green]Selected {selected_agent} agent for this request[/green]")
         
@@ -501,6 +560,28 @@ class OrchestratorAgent:
         with Live(Spinner("point", "[bold magenta]Creating execution plan...[/bold magenta]"), refresh_per_second=10) as live:
             response = self.model.invoke(messages)
             live.stop()
+        try:
+            prompt_text = ""
+            for m in messages:
+                c = m.content
+                if isinstance(c, list):
+                    for item in c:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            prompt_text += item.get("text", "")
+                elif isinstance(c, str):
+                    prompt_text += c
+                else:
+                    prompt_text += str(c)
+            if isinstance(response.content, list):
+                completion_text = ""
+                for item in response.content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        completion_text += item.get("text", "")
+            else:
+                completion_text = response.content if isinstance(response.content, str) else str(response.content)
+            tracker.record("orchestrator", tracker.estimate_tokens(prompt_text), tracker.estimate_tokens(completion_text))
+        except Exception:
+            pass
         
         plan = response.content.strip()
         
@@ -629,8 +710,12 @@ class OrchestratorAgent:
                     original_request = str(msg.content)
                     break
         
-        # Build comprehensive context message including plan
-        context_message = f"""Original Request: {original_request}
+        if selected_agent == "general":
+            context_message = f"""Original Request: {original_request}
+
+Please assist the user directly without creating or following a plan."""
+        else:
+            context_message = f"""Original Request: {original_request}
 
 Execution Plan:
 {state.plan}
@@ -1025,6 +1110,61 @@ Please proceed with executing this plan. The plan has been confirmed by the user
                     error_msg = "No valid response from log_analyzer agent"
                     self.console.print(f"[bold red]{error_msg}[/bold red]")
                     return {"agent_response": error_msg, "agent_context": agent_context}
+            elif active_agent == "general":
+                general_memory = list(state.general_memory) if state.general_memory else []
+                current_message = HumanMessage(content=last_message.content)
+                general_memory.append(current_message)
+                general_state = type('State', (), {'messages': general_memory})()
+                general_response = self.general_agent.model_response(general_state)
+                if "messages" in general_response and len(general_response["messages"]) > 0:
+                    response_message = general_response["messages"][0]
+                    general_state.messages = general_memory + [response_message]
+                    if (isinstance(response_message, AIMessage) and hasattr(response_message, 'tool_calls') and response_message.tool_calls):
+                        tool_response = await self.general_agent.tool_use(general_state)
+                        if "messages" in tool_response:
+                            general_state.messages = general_memory + [response_message] + tool_response["messages"]
+                            general_memory = general_state.messages
+                        final_response = self.general_agent.model_response(general_state)
+                        final_message = final_response["messages"][0]
+                        if isinstance(final_message.content, list):
+                            response_text = ""
+                            for item in final_message.content:
+                                if item["type"] == "text":
+                                    response_text += item.get("text", "")
+                        else:
+                            response_text = final_message.content
+                        final_ai_message = AIMessage(content=response_text)
+                        general_memory.append(final_ai_message)
+                        agent_context["messages"].append(final_ai_message)
+                        result = {
+                            "agent_response": response_text,
+                            "agent_context": agent_context,
+                            "general_memory": general_memory
+                        }
+                        state.general_memory = general_memory
+                        return result
+                    else:
+                        if isinstance(response_message.content, list):
+                            response_text = ""
+                            for item in response_message.content:
+                                if item["type"] == "text":
+                                    response_text += item.get("text", "")
+                        else:
+                            response_text = response_message.content
+                        ai_message = AIMessage(content=response_text)
+                        general_memory.append(ai_message)
+                        agent_context["messages"].append(ai_message)
+                        result = {
+                            "agent_response": response_text,
+                            "agent_context": agent_context,
+                            "general_memory": general_memory
+                        }
+                        state.general_memory = general_memory
+                        return result
+                else:
+                    error_msg = "No valid response from general agent"
+                    self.console.print(f"[bold red]{error_msg}[/bold red]")
+                    return {"agent_response": error_msg, "agent_context": agent_context}
                 
         except Exception as e:
             error_msg = f"Error occurred while processing with {active_agent} agent: {str(e)}"
@@ -1046,7 +1186,7 @@ Please proceed with executing this plan. The plan has been confirmed by the user
                 border_style="cyan",
             )
         )
-        
+
         return {"messages": [AIMessage(content=agent_response)]}
 
     def print_mermaid_workflow(self):
