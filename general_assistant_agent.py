@@ -124,6 +124,9 @@ If a task requires coding, file operations, or log analysis, call the appropriat
         last_message = state.messages[-1]
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
             return "tool_use"
+        for msg in reversed(state.messages):
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                return "tool_use"
         return "user_input"
 
     def check_exit(self, state: GeneralAssistantState) -> str:
@@ -138,11 +141,23 @@ If a task requires coding, file operations, or log analysis, call the appropriat
         response = []
         tools_by_name = {t.name: t for t in self.tools}
         last_message = state.messages[-1]
-        if not isinstance(last_message, AIMessage) or not hasattr(last_message, "tool_calls") or not last_message.tool_calls:
+        ai_msg = None
+        if isinstance(last_message, AIMessage) and hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            ai_msg = last_message
+        else:
+            for msg in reversed(state.messages):
+                if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls") and msg.tool_calls:
+                    ai_msg = msg
+                    break
+        if not ai_msg:
             return {"messages": []}
-        for tc in last_message.tool_calls:
+        for tc in ai_msg.tool_calls:
             tool = tools_by_name.get(tc["name"])
+            if not tool:
+                continue
             tool_node = ToolNode([tool])
-            tool_result = await tool_node.ainvoke(state)
-            response.append(tool_result["messages"][0])
+            tmp_state = {"messages": [ai_msg]}
+            tool_result = await tool_node.ainvoke(tmp_state)
+            if "messages" in tool_result and tool_result["messages"]:
+                response.append(tool_result["messages"][0])
         return {"messages": response}
