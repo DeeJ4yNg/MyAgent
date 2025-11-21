@@ -224,32 +224,18 @@ class Agent:
         ]
         local_tools.append(KnowledgeSearchTool())
         
-        # Add agent collaboration tool if registry is available
-        if self.agent_registry:
-            from tools.agent_collaboration_tool import call_other_agent
-            from langchain_core.tools import tool
-            
-            # Create a bound version of call_other_agent with registry
-            def call_agent_with_registry(agent_name: str, request: str) -> str:
-                """Call another agent (coder or log_analyzer) to help with a task.
-                
-                Args:
-                    agent_name: Name of the agent to call ("coder" or "log_analyzer")
-                    request: The request or question to send to the other agent
-                
-                Returns:
-                    Response from the called agent
-                """
-                return call_other_agent.invoke({
-                    "agent_name": agent_name,
-                    "request": request,
-                    "agent_registry": self.agent_registry
-                })
-            
-            # Create a tool wrapper
-            collaboration_tool = tool(call_agent_with_registry)
-            collaboration_tool.name = "call_other_agent"
-            local_tools.append(collaboration_tool)
+        from tools.agent_collaboration_tool import call_other_agent
+        from langchain_core.tools import tool
+        async def call_agent_with_registry(agent_name: str, request: str) -> str:
+            """Call another agent (coder or log_analyzer) to help with a task."""
+            return await call_other_agent.ainvoke({
+                "agent_name": agent_name,
+                "request": request,
+                "agent_registry": self.agent_registry
+            })
+        collaboration_tool = tool(call_agent_with_registry)
+        collaboration_tool.name = "call_other_agent"
+        local_tools.append(collaboration_tool)
 
         # Set up MCP client
         mcp_tools = await self.get_mcp_tools()

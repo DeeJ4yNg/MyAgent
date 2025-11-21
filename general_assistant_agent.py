@@ -71,15 +71,14 @@ class GeneralAssistantAgent:
         if self._initialized:
             return self
         local_tools = []
-        if self.agent_registry:
-            from tools.agent_collaboration_tool import call_other_agent
-            from langchain_core.tools import tool
-            def call_agent_with_registry(agent_name: str, request: str) -> str:
-                """Call another agent (coder, file_manager, log_analyzer) to help with a task."""
-                return call_other_agent.invoke({"agent_name": agent_name, "request": request, "agent_registry": self.agent_registry})
-            collaboration_tool = tool(call_agent_with_registry)
-            collaboration_tool.name = "call_other_agent"
-            local_tools.append(collaboration_tool)
+        from tools.agent_collaboration_tool import call_other_agent
+        from langchain_core.tools import tool
+        async def call_agent_with_registry(agent_name: str, request: str) -> str:
+            """Call another agent (coder, file_manager, log_analyzer) to help with a task."""
+            return await call_other_agent.ainvoke({"agent_name": agent_name, "request": request, "agent_registry": self.agent_registry})
+        collaboration_tool = tool(call_agent_with_registry)
+        collaboration_tool.name = "call_other_agent"
+        local_tools.append(collaboration_tool)
         self.tools = local_tools
         self.model_with_tools = self.model.bind_tools(self.tools)
         agent_config = self.config.get("agents", {}).get("general", {})

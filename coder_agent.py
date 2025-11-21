@@ -219,30 +219,18 @@ class CoderAgent:
             execute_code
         ]
         
-        # Add agent collaboration tool if registry is available
-        if self.agent_registry:
-            # Create a bound version of call_other_agent with registry
-            def call_agent_with_registry(agent_name: str, request: str) -> str:
-                """Call another agent (file_manager or log_analyzer) to help with a task.
-                
-                Args:
-                    agent_name: Name of the agent to call ("file_manager" or "log_analyzer")
-                    request: The request or question to send to the other agent
-                
-                Returns:
-                    Response from the called agent
-                """
-                return call_other_agent.invoke({
-                    "agent_name": agent_name,
-                    "request": request,
-                    "agent_registry": self.agent_registry
-                })
-            
-            # Create a tool wrapper
-            from langchain_core.tools import tool
-            collaboration_tool = tool(call_agent_with_registry)
-            collaboration_tool.name = "call_other_agent"
-            local_tools.append(collaboration_tool)
+        # Add agent collaboration tool
+        async def call_agent_with_registry(agent_name: str, request: str) -> str:
+            """Call another agent (file_manager or log_analyzer) to help with a task."""
+            return await call_other_agent.ainvoke({
+                "agent_name": agent_name,
+                "request": request,
+                "agent_registry": self.agent_registry
+            })
+        from langchain_core.tools import tool
+        collaboration_tool = tool(call_agent_with_registry)
+        collaboration_tool.name = "call_other_agent"
+        local_tools.append(collaboration_tool)
 
         # Set up MCP client (optional)
         mcp_tools = await self.get_mcp_tools()
