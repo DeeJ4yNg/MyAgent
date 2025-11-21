@@ -12,71 +12,61 @@ from rich.panel import Panel
 from rich.markdown import Markdown
 
 
+_AGENT_CACHE = {}
+
 @tool
-def call_other_agent(
+async def call_other_agent(
     agent_name: str,
     request: str,
     agent_registry: Optional[dict] = None
 ) -> str:
     """
     Call another agent to help with a task. This enables inter-agent collaboration.
-    
-    Args:
-        agent_name: Name of the agent to call ("coder", "file_manager", "log_analyzer")
-        request: The request or question to send to the other agent
-        agent_registry: Registry of available agents (set automatically by orchestrator)
-    
+    Parameters:
+        agent_name (str): The name of the agent to call. Must be one of "coder", "file_manager", or "log_analyzer".
+        request (str): The request or task description for the agent.
+        agent_registry (Optional[dict]): A dictionary mapping agent names to agent instances. If not provided, the global agent cache will be used.
     Returns:
-        Response from the called agent
+        str: The response or result from the called agent.
     """
-    console = Console()
-    
-    if not agent_registry:
-        return "Error: Agent registry not available. Cannot call other agents."
-    
     # Validate agent name
     valid_agents = ["coder", "file_manager", "log_analyzer"]
     if agent_name not in valid_agents:
         return f"Error: Invalid agent name '{agent_name}'. Available agents: {', '.join(valid_agents)}"
-    
-    # Get the agent from registry
-    agent = agent_registry.get(agent_name)
+    # Get agent instance from registry or cache
+    registry = agent_registry or _AGENT_CACHE
+    agent = registry.get(agent_name)
     if not agent:
-        return f"Error: Agent '{agent_name}' not found in registry."
-    
-    try:
-        # Create a temporary state with the request
-        temp_state = type('State', (), {'messages': [HumanMessage(content=request)]})()
-        
-        # Call the agent's model_response method (synchronous)
         try:
-            response = agent.model_response(temp_state)
+            if agent_name == "coder":
+                from coder_agent import CoderAgent
+                agent = _AGENT_CACHE.get("coder") or CoderAgent()
+                await agent.initialize()
+                _AGENT_CACHE["coder"] = agent
+            elif agent_name == "file_manager":
+                from file_management_agent import Agent as FileAgent
+                agent = _AGENT_CACHE.get("file_manager") or FileAgent()
+                await agent.initialize()
+                _AGENT_CACHE["file_manager"] = agent
+            elif agent_name == "log_analyzer":
+                from log_analyzer_agent import LogAnalyzerAgent
+                agent = _AGENT_CACHE.get("log_analyzer") or LogAnalyzerAgent()
+                await agent.initialize()
+                _AGENT_CACHE["log_analyzer"] = agent
         except Exception as e:
-            return f"Error calling {agent_name} agent's model_response: {str(e)}"
-        
-        # Extract response content
+            return f"Error initializing '{agent_name}' agent: {str(e)}"
+    try:
+        temp_state = type('State', (), {'messages': [HumanMessage(content=request)]})()
+        response = agent.model_response(temp_state)
         if "messages" in response and len(response["messages"]) > 0:
             response_message = response["messages"][0]
-            
-            # Check if tool calls are needed
-            if (hasattr(response_message, 'tool_calls') and 
-                response_message.tool_calls):
-                # Execute tools if needed
-                import asyncio
-                try:
-                    tool_response = asyncio.run(agent.tool_use(temp_state))
-                except Exception as e:
-                    return f"Error executing tools for {agent_name} agent: {str(e)}"
-                
-                # Get final response after tool execution
+            if (hasattr(response_message, 'tool_calls') and response_message.tool_calls):
                 temp_state.messages = [HumanMessage(content=request), response_message]
+                tool_response = await agent.tool_use(temp_state)
                 if "messages" in tool_response:
                     temp_state.messages.extend(tool_response["messages"])
-                
                 final_response = agent.model_response(temp_state)
                 final_message = final_response["messages"][0]
-                
-                # Extract content
                 if isinstance(final_message.content, list):
                     response_text = ""
                     for item in final_message.content:
@@ -84,10 +74,8 @@ def call_other_agent(
                             response_text += item.get("text", "")
                 else:
                     response_text = final_message.content
-                
                 return f"Response from {agent_name} agent:\n\n{response_text}"
             else:
-                # No tool calls, return direct response
                 if isinstance(response_message.content, list):
                     response_text = ""
                     for item in response_message.content:
@@ -95,11 +83,9 @@ def call_other_agent(
                             response_text += item.get("text", "")
                 else:
                     response_text = response_message.content
-                
                 return f"Response from {agent_name} agent:\n\n{response_text}"
         else:
             return f"Error: No response from {agent_name} agent."
-            
     except Exception as e:
         return f"Error calling {agent_name} agent: {str(e)}"
 
