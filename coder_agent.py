@@ -499,9 +499,11 @@ class CoderAgent:
         - Otherwise -> 'user_input' (continue conversation)
         """
         last_message = state.messages[-1]
-
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
             return "tool_use"
+        for msg in reversed(state.messages):
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                return "tool_use"
         return "user_input"
 
     # Node: tool_use
@@ -516,13 +518,19 @@ class CoderAgent:
         response = []
         tools_by_name = {t.name: t for t in self.tools}
 
-        # Check if the last message is an AIMessage with tool calls
+        ai_msg = None
         last_message = state.messages[-1]
-        if not isinstance(last_message, AIMessage) or not hasattr(last_message, "tool_calls") or not last_message.tool_calls:
-            print(f"❌ Error: Last message is not an AIMessage with tool_calls. Message type: {type(last_message)}")
-            return {"messages": [HumanMessage(content="Error: No valid tool calls found in the last message.")]}
-        
-        for tc in last_message.tool_calls:
+        if isinstance(last_message, AIMessage) and hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            ai_msg = last_message
+        else:
+            for msg in reversed(state.messages):
+                if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls") and msg.tool_calls:
+                    ai_msg = msg
+                    break
+        if not ai_msg:
+            return {"messages": []}
+
+        for tc in ai_msg.tool_calls:
             tool_name = tc["name"]
             tool_args = tc["args"]
             print(f"🔧 Invoking tool '{tool_name}' with args {tool_args}")
@@ -534,7 +542,7 @@ class CoderAgent:
                 from rich.spinner import Spinner
                 from rich.live import Live
                 with Live(Spinner("point", f"[bold magenta]Executing {tool_name}...[/bold magenta]"), refresh_per_second=10) as live:
-                    tool_result = await tool_node.ainvoke(state)
+                    tool_result = await tool_node.ainvoke({"messages": [ai_msg]})
                     live.stop()
 
                 print(f"🛠️ Tool Result: {tool_result}")
